@@ -1,26 +1,11 @@
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
-
 [project]
-name = "attachai"
-version = "1.0.0"
-description = "Durable PostgreSQL-backed evidence-grounded outreach coordinator"
-requires-python = ">=3.11"
-dependencies = [
-  "psycopg[binary]>=3.2,<4",
-  "PyYAML>=6.0.2,<7",
-  "croniter>=6.0,<7",
-  "requests>=2.32.3,<3",
-  "beautifulsoup4>=4.12.3,<5",
-]
-
-[project.optional-dependencies]
-test = ["pytest>=8.3,<10"]
-
-[tool.setuptools.packages.find]
-include = ["attachai*"]
-
+name = "attachai-platform"
+version = "1.2.0"
+description = "AttachAI multi-client RAG assistant platform with admin dashboard and website widget"
+requires-python = ">=3.10"
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "-ra"

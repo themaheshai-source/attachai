@@ -1,215 +1,187 @@
-# AttachAI — durable outreach, not a local queue
+# AttachAI — Multi-client AI Assistant Platform
 
-Python 3.11+ • PostgreSQL / Supabase • Google Places Text Search (New) • one structured LLM client • SMTP/IMAP
+AttachAI is a local-first RAG (retrieval-augmented generation) engine with a web-based admin console for creating and managing isolated client assistants. It includes an embeddable website chat widget, per-client knowledge ingestion, conversation history, domain allowlists, widget customization, and a FastAPI backend.
 
-**Safe on checkout:** automatic campaigns are disabled, SMTP is disabled, dry-run is enabled, and `reset_state=false`. Sending windows, daily sender/total caps and artificial batch waits are OFF. Due follow-up delays remain active. Nothing is sent just because this repository is pushed.
+## What is included
 
-## What a campaign means
+- **Admin console** at `/admin`, with overview metrics and a Clients workspace.
+- **Admin authentication** using a bearer API key. For local development, the first run generates a private bootstrap key in `.rag_data/admin_bootstrap_key.txt`. Production requires `ADMIN_API_KEY` to be set explicitly.
+- **Client lifecycle**: create clients, pause/activate assistants, update domains, rotate client keys, and delete a client workspace.
+- **Tenant isolation**: each client has its own knowledge directory, vector store/collection, and SQLite conversations database under `<RAG_DATA_DIR>/clients/<client_id>/`.
+- **Assistant settings**: display name, welcome and fallback messages, additional instructions, provider/model overrides, and allowed domains.
+- **Widget settings**: primary color, light/dark theme, left/right placement, panel size, and suggested questions.
+- **Knowledge lifecycle**: upload PDF, DOCX, TXT, Markdown, or CSV files (10 MB per file); index/refresh them per client; remove source files.
+- **Publishing**: a per-client website `<script>` embed snippet and `/widget.js` loader. The public widget uses a client ID and origin/domain validation; the private client API key is never placed in website JavaScript.
+- **Conversation management**: view recent client sessions and read a transcript.
+- **Lead capture**: an optional website-widget contact form requires visitor consent; admins can review leads per client or export the platform-wide lead list as CSV.
+- **Existing RAG capabilities**: multilingual query understanding, hybrid retrieval, evidence-aware answers, citations, and session-scoped conversational memory remain in place.
+- **Deployment artifacts**: Dockerfile, Docker Compose, and a Render Blueprint with a persistent disk.
 
-A logical **real campaign** requests a target of *new successful INITIAL SMTP sends*, normally 100. Queued messages, drafts, dry-run results and previous campaigns' successes do not count. An interrupted campaign resumes its existing durable progress before another real campaign starts. A completed campaign lets the next invocation start a new target.
+## Requirements
 
-For example, an interruption after 27 successful initials leaves 73 outstanding for a target of 100. Rerun with the **same target**, `reset_state=false`, `send_enabled=true`, `dry_run=false`. Previously SENT messages are never automatically resent. A different target while recovering produces an error; do not reset merely to change it.
+- Python 3.10 or newer (Python 3.11/3.12 recommended).
+- For no-key local testing, the platform can start, accept clients, ingest documents, and exercise retrieval without an LLM credential. A configured supported LLM provider is needed for normal generated grounded answers; with `RAG_LLM_PROVIDER=none`, factual requests may safely fall back instead of receiving a generated response.
+- Optional hosted LLM and Qdrant providers require their own valid configuration and credentials.
 
-RUN 2 handles any genuinely due follow-ups, then 100 additional new initials. RUN 3 continues eligible chains plus another 100 new initials. F1 is due 24 hours after INITIAL SENT; F2 is due 7 days after F1 SENT; F3 is due 14 days after F2 SENT. Each stage requires the immediately preceding successful stage, preserves that sender, and threads to it with In-Reply-To/References. A failed F1 never unlocks F2. Reply, hard bounce or unsubscribe suppresses further follow-ups.
+## Run locally (Windows PowerShell)
 
-Targets are objectives, **not guaranteed deliverability promises**. Exhausted discovery budgets, insufficient public contacts/evidence, provider capacity, stopped senders or the runtime limit can leave a campaign incomplete. Inspect the remaining target and failure reason, fix the cause and resume.
+From the extracted project folder named `AttachAI`:
 
-## Architecture and durable safety
-
-* `monitor.yaml` is the non-secret operational control plane; workflow dispatch inputs override only the six supported manual controls. Monitor feature disables and emergency stop always win.
-* PostgreSQL is the sole durable state source, in the isolated `attachai` schema. No SQLite, CSV/JSONL runtime state, or Git-tracked queue is used.
-* The coordinator acquires a session-level PostgreSQL advisory lock **before** migration/reset/reconciliation/work and holds it until exit. GitHub production concurrency adds a second guard. Read-only diagnostics deliberately acquire no lock and run no migrations.
-* Database business-key constraints protect lead email, sequence, Message-ID and inbound event identity. Sharing a website domain does not itself collapse distinct contacts.
-* Research, structured drafts, validation, sender assignments, retries, campaigns, messages, sender health and mailbox cursors persist. A bounded thread pool returns independent network outcomes; the coordinator persists individual completions without waiting for an entire batch to finish.
-* One crawler bounds pages, response bytes and timeouts, respects configurable robots controls, and extracts deterministic evidence. One LLM implementation drafts against that evidence; validation rejects unsupported observations. Opportunity language is hypothetical, not an invented business fact.
-* Initial batches contain at most ten messages, at most one per sender. There are up to ten concurrent network operations and no default artificial batch delay.
-* SMTP and PostgreSQL cannot commit atomically. SMTP acceptance means the server accepted the message, **not inbox delivery**. An uncertain DATA timeout/disconnect or stale SENDING record becomes REVIEW, never an automatic resend. Confirmed delivery state, follow-up creation, and its durable audit event are committed together; operator review changes and history records are also atomic.
-* Ambiguous initials reserve unfilled target slots without counting as successes. For example, 97 SENT plus 3 unknown outcomes blocks further initials until those 3 are verified. Confirmed acceptance completes 100; confirmed non-acceptance releases safe retries. This avoids overshooting the target by automatically replacing unknown deliveries.
-* Follow-up draft retries and SMTP attempts have separate durable counters. Temporary/invalid draft failures get bounded retries; network preparation is concurrent. Only successful SMTP acceptance creates the next stage.
-
-## GitHub and Supabase setup
-
-1. Replace the old repository contents with this repository, excluding `.git`, local credentials, environments and caches. Commit and push to the default branch. Remove any old competing production workflows; this replacement has exactly one production workflow and one CI workflow.
-2. Provision PostgreSQL (Supabase supported). Choose a connection reachable from GitHub-hosted runners, allowing the app user to create/use its own schema. Use a **direct or session-pooled connection**, not a transaction-pooling endpoint: the long-lived advisory lock requires session affinity. Where a direct Supabase endpoint is IPv6-only, use its documented session-pooler connection reachable by your runner. Require TLS with `sslmode=require` (or `verify-full`/`verify-ca` with appropriate trust configuration); remote connection URLs without an explicit TLS mode are rejected before connecting. Keep the URL encoded correctly if the database password contains reserved URL characters.
-3. Enable Google Places API **Text Search (New)** on a billing-enabled Google Cloud project. Restrict the API key to the needed API and suitable runner access; runner egress IPs are not fixed by default. Provide funded API access to the configured NVIDIA-compatible LLM endpoint/model. Verify model availability for your account.
-4. Prepare ten distinct sending accounts with working authenticated SMTP and IMAP, provider-supported TLS and any required app passwords. Configure SPF/DKIM/DMARC and appropriate permissions/compliance for your outreach. Ten accounts do not bypass provider quotas or anti-abuse policies.
-5. In GitHub **Settings → Secrets and variables → Actions**, create these four repository **Secrets**, exactly. They are the only mandatory GitHub Actions secrets; all other controls are defaults in `monitor.yaml` or ordinary workflow inputs:
-
-   | Secret | Content |
-   | --- | --- |
-   | `DATABASE_URL` | PostgreSQL URL including database, username/password and TLS options |
-   | `GOOGLE_PLACES_API_KEY` | Google Places API key |
-   | `LLM_API_KEY` | API key accepted by `llm.base_url` |
-   | `SENDER_ACCOUNTS_JSON` | JSON array of ten complete accounts |
-
-   No GitHub Variables are required. Never put passwords/API keys in monitor.yaml, workflow inputs, commit history or screenshots.
-6. Edit `monitor.yaml`: choose geographically specific discovery queries, truthful offer/signature and **your genuine postal address** under `llm.postal_address`. The empty default intentionally prevents real sends. Confirm rating/review thresholds and budgets. Keep `automation.enabled=false` during verification.
-7. Run the read-only diagnostic first, then CI and a safe dry-run before authorizing real sending. A diagnostic validates the four secret formats and opens a read-only database connection to run `SELECT 1`, inspect migration status, and check whether legacy `public.outreach` / `public.suppression` tables contain rows. A populated legacy table, partial schema, or missing core relation makes the diagnostic exit with a deployment-blocked result. It does **not** run Google Places/LLM/SMTP calls, acquire campaign locks, run migrations, reconcile records, process campaigns or write events. It validates the shape/presence of provider keys, not whether those keys are accepted by the live providers.
-
-   In GitHub, open **Actions → AttachAI production → Run workflow**, set `diagnostic_only=true`, and leave the other safety defaults unchanged. For a local diagnostic, securely export the four environment variables and run:
-
-   ```sh
-   python -m attachai.cli diagnose
-   ```
-
-   To apply pending migrations deliberately, dispatch the workflow with `migration_only=true` and `diagnostic_only=false`, or run `python -m attachai.cli migrate` locally with `DATABASE_URL` exported. The migration-only action takes the coordinator lock and applies migrations but never processes campaigns or sends messages. Normal campaign runs also apply pending migrations after taking the lock. Migrations are sequential, transactional, and recorded in `attachai.schema_version`; the included `002` migration is additive and retains existing rows.
-
-### Existing legacy database: do not silently start over
-
-This is a clean schema rewrite, not an automatic legacy-state conversion. If populated `public.outreach` or `public.suppression` tables from the supplied old implementation exist, startup **refuses to proceed** rather than ignoring already-contacted recipients or lost suppressions. It neither deletes nor converts those legacy rows. Back up the database and carry out a separately audited history/sequence migration before using that same populated deployment. Do not point a fresh deployment at the same recipients to evade this safeguard. The included lifecycle tests start with an empty application database and verify resume across this replacement's own runs. Existing legacy follow-up chains are not automatically continued; this is an explicit deployment limitation.
-
-### Backup and migration procedure
-
-Before deploying to any database that contains application data, create a Supabase restore point/backup in the Supabase Dashboard and verify that the backup belongs to the correct project. Keep an independently restorable dump as well when the data is important. For a portable dump, install PostgreSQL client tools, store the password in a local `PGPASSFILE` with permissions `0600` (do not put it in shell history), then use the host/port/user/database values from the Supabase connection details:
-
-```sh
-umask 077
-export PGPASSFILE="$HOME/.pgpass-attachai"
-# Create this file with a secure editor. Format: host:port:database:user:password
-# Escape ':' and '\\' within fields as required by PostgreSQL's .pgpass format.
-chmod 600 "$PGPASSFILE"
-pg_dump --format=custom --no-owner --no-acl \
-  --host "$DB_HOST" --port "$DB_PORT" --username "$DB_USER" \
-  --dbname "$DB_NAME" --file "attachai-before-migration.dump"
-```
-
-Keep the dump encrypted and access-controlled. Test its restore to a **disposable database/project**, without `--clean` or any command that drops existing tables. The variables in this example are local shell inputs for the backup command only; they are not AttachAI runtime settings or GitHub Actions secrets. If legacy tables are populated, stop after the read-only diagnostic, preserve the backup, and perform a reviewed, separately tested data/sequence conversion; the supplied migration intentionally does not import legacy state automatically. For a fresh/empty application schema or an existing AttachAI schema at a supported version, run `diagnose`, then `migrate`, then the no-send dry-run and inspect database state before authorizing sending.
-
-An account has this exact shape (repeat with ten unique ids/emails):
-
-```json
-{
-  "id": "sender01",
-  "email": "sender01@your-domain.example",
-  "password": "your-provider-app-password",
-  "smtp_host": "smtp.your-provider.example",
-  "smtp_port": 465,
-  "imap_host": "imap.your-provider.example",
-  "imap_port": 993,
-  "tls_mode": "ssl"
-}
-```
-
-`tls_mode` is `ssl` (implicit TLS) or `starttls`; set the correct ports for your provider. Optional `imap_password` overrides the shared SMTP password. Ports are JSON numbers, not strings. All required fields must exist; ids and normalized emails must be unique. The example host/address is explanatory, not a working provider configuration. Store only your complete real array in the Secret. No API operation needs these example credentials.
-
-## Manual workflow settings
-
-Open **Actions → AttachAI production → Run workflow** on the configured branch. `diagnostic_only` defaults to `false`; turn it on for a no-write configuration/database check. Otherwise the selected campaign inputs remain as shown below.
-
-| Input | First safe dry-run | First real FULL test | Recovery |
-| --- | --- | --- | --- |
-| `reset_state` | false | false | **false** |
-| `target_new_initials` | 100 | **100** | same unfinished target |
-| `send_enabled` | false | **true** | true |
-| `dry_run` | true | **false** | false |
-| `process_followups` | true | **true** | true |
-| `process_new_outreach` | true | **true** | true |
-
-Dry-run can call discovery/research/LLM and consume provider quota; it does **not** send SMTP or satisfy the real campaign target. Dry campaigns are separate from real campaign accounting. You can choose a smaller target for a deliberate small real test *before* beginning the 100-target campaign; do not change an unfinished campaign's target.
-
-For **FOLLOWUPS ONLY**, use `process_followups=true`, `process_new_outreach=false`. For **NEW OUTREACH ONLY**, use the inverse. FULL is both true. `outreach.enabled=false` / `followups.enabled=false` in the monitor blocks the respective feature even if dispatch requests it. Emergency stop blocks sending and processing regardless of dispatch overrides. `send_enabled=true` still does not send while `dry_run=true`.
-
-Local equivalents, from the repository root:
-
-```sh
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-# Securely export credentials first. .env.example is documentation, not auto-loaded.
-python -m attachai.cli migrate
-python -m attachai.cli run --reset-state false --target-new-initials 100 \
-  --send-enabled false --dry-run true \
-  --process-followups true --process-new-outreach true
-```
-
-Use explicit `true`/`false`, not truthy strings such as `yes` or `1`. For a different control-file path, the global argument precedes the subcommand: `python -m attachai.cli --config path/to/monitor.yaml run ...`. Validation failures name settings, never secret values. Follow-up drafting needs the LLM key; new-outreach preparation needs both Places and LLM keys, even in dry-run. Real sends require ten valid accounts. Migrate and manual review require only the database secret. Disabled scheduled polls exit before loading secrets or opening the database.
-
-## Reset is destructive, not recovery
-
-`reset_state=true` clears application runtime/campaign data in `attachai`, respecting foreign keys. It does not delete GitHub configuration, environment credentials or the Supabase project, and does not wipe other schemas.
-
-`reset_state` defaults to `false` in the workflow and CLI. An explicit `reset_state=true` is destructive: it erases application campaign/contact history and suppression history, so those recipients can be discovered and contacted again. Never set it for routine resume, provider trouble or target changes. Before any deliberate reset, back up the database, verify the exact environment, and preserve required suppression records for legal compliance. Never reset a database shared with another deployment; test only against a disposable database. No automatic path enables reset.
-
-## REVIEW: establish evidence before resolving
-
-No system can infer whether an SMTP server accepted a message after every network failure. Before resolving REVIEW, inspect your provider's delivery/transaction logs or authoritative sent-message evidence for the exact stable Message-ID, sender, recipient and time. Merely not seeing a recipient reply is not proof of non-delivery; some SMTP submissions do not automatically create an IMAP Sent item.
-
-```sh
-python -m attachai.cli review --message-id MESSAGE_ROW_ID --resolution sent \
-  --evidence 'Provider transaction log reference ABC123 verified by operator' \
-  --sent-at '2026-10-11T10:00:00+00:00' --confirm
-# Only with positive evidence that SMTP acceptance did NOT happen:
-python -m attachai.cli review --message-id MESSAGE_ROW_ID --resolution not-sent \
-  --evidence 'Provider rejection log reference XYZ456 verified by operator' --confirm
-```
-
-Use the database message row id reported for REVIEW, not a guessed recipient. Replace the example evidence reference with a real operator verification reference; do not include credentials or message bodies. `--evidence` is required for both resolutions; `--sent-at` is additionally required for `sent` and must be the verified actual SMTP acceptance time as a timezone-aware ISO timestamp, not the review time. `sent` records confirmed acceptance; `not-sent` authorizes normal retry eligibility and can cause duplicates if your conclusion is wrong. Preserve supporting evidence in your operational audit records. If evidence is inconclusive, **leave REVIEW unresolved**. The confirmation flag is your assertion that you verified the outcome; it is not an automatic provider reconciliation service.
-
-REVIEW can also hold a follow-up whose draft exhausted its retry/validation budget before any SMTP operation. After correcting the research/provider problem and verifying no submission occurred, `not-sent` resets that message's draft budget and allows re-preparation. This does not reset other leads or successful stages.
-
-## Future automation: one monitor file, real polling
-
-The production GitHub workflow has an actual `*/15 * * * *` UTC polling trigger. A cron string in monitor.yaml **cannot wake GitHub Actions itself**. Each poll loads monitor.yaml and determines the latest due outreach/follow-up slot in `automation.timezone`. The app recognizes slots up to 20 minutes late; database-unique feature/UTC slot claims prevent duplicate execution. Simultaneously due features run together. Disabled/no-due schedules are safe no-ops without credentials.
-
-After manual verification, set `automation.enabled=true`, select the two five-field cron schedules/timezone and desired feature toggles. To automate real SMTP also deliberately set `safety.send_enabled=true`, `safety.dry_run=false` and configure the required postal address/secrets. Manual dispatch defaults remain safe independent of those automatic settings. Disable automation to stop scheduled work; emergency stop is the stronger global gate.
-
-GitHub schedules run from the default branch and can be delayed, dropped, disabled by repository inactivity/policies, or queued behind an active run. Slots older than 20 minutes are **not backfilled**; frequent cron schedules produce only their latest due slot per poll, not every missed minute. GitHub concurrency can replace an older pending run with a newer one; this is not a guaranteed scheduler. Long campaigns can therefore miss later schedule slots. UTC slot identity and IANA timezone handling avoid naive local timestamps: nonexistent spring-forward minutes do not run; repeated fall-back minutes are distinct UTC slots and can run twice. Choose UTC to avoid this daylight-saving wall-clock behavior. For guaranteed punctuality/backfill, use a separately managed reliable scheduler calling this same CLI, with the same durable lock and slot semantics.
-
-## Controls and logs
-
-Control sections: `automation` (activation/crons/timezone), `safety` (emergency/send/dry), `outreach` (target/batch/concurrency), `followups` (three chained delays/run budget), `limits` (optional sending windows/caps, gap/runtime), `retry` (attempts/backoff/cooldown), `discovery` (queries/provider budgets/buffer/qualification), `research` (cache version/crawler bounds/robots/evidence), `llm` (endpoint/model/offer/footer), `mailbox` (sync bounds/lookback).
-
-Invalid values fail at startup; batch/concurrency are bounded to 1–10. Unknown controls, duplicate YAML keys and malformed booleans fail rather than being silently ignored. Follow-up delays are seconds; `[0, 0, 0]` is an explicit accelerated-testing choice, **not the default**. Changing research version invalidates reuse as designed. Budgets and max runtime bound work; increasing the target alone cannot overcome external capacity.
-
-Inspect Actions logs for START, stage progress, individual sends, batches and FINAL. Distinguish initial SENT, follow-ups sent, dry results and remaining target. A failure/nonzero exit with remaining target is not a completed campaign. PostgreSQL remains authoritative if a runner dies before printing its final line. Consult the migration for table definitions; inspect campaigns/messages/senders/inbound state using a trusted database console, not public logs. Do not paste credential-bearing URLs or recipient bodies into issues.
-
-## Tests and troubleshooting
-
-CI starts a **PostgreSQL 16 service** and runs `python -m pytest -q`; it receives no production secrets and uses network fakes, never real SMTP. Integration tests require PostgreSQL, not SQLite. Local tests:
-
-```sh
-# Create a disposable PostgreSQL database, then:
-export TEST_DATABASE_URL='postgresql://attachai@localhost:5432/attachai_test'
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+New-Item -ItemType Directory -Force .\knowledge | Out-Null
 python -m pytest -q
+uvicorn advanced_rag.web:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Never point `TEST_DATABASE_URL` at production: integration tests manipulate application state. The CI PostgreSQL service is an ephemeral container using trust authentication and contains no production credentials. For local PostgreSQL, adapt the URL to your disposable test role/authentication without committing passwords. No external live-send test is included; successful unit/integration tests do not prove your provider credentials, quota, deliverability or runner connectivity.
+Open `http://127.0.0.1:8000/admin`. The initial admin key is written to `.rag_data/admin_bootstrap_key.txt`. Open that file and paste its value into the dashboard login page. Keep the file private; do not commit it or send it to a client. If you prefer to choose your own key, set `ADMIN_API_KEY` in `.env` before the first run. Use a long, random, unique value.
 
-* **Places failure / few contacts:** verify billing, API enablement/key restrictions, focused queries, website quality and budgets. The system extracts public emails; it does not fabricate contacts.
-* **LLM 503/timeouts:** bounded retry/backoff isolates items. Verify quota/model availability; rerun recovery rather than resetting. HTTP 200 invalid JSON is invalid output, not successful preparation.
-* **Evidence rejected:** inspect actual researched evidence and website access/robots. Unsupported claims are rejected intentionally; increasing confidence is not a substitute for evidence.
-* **SMTP auth:** affected sender stops; fix app-password/TLS/provider policy before recovery. Terminal recipient failures suppress the recipient; temporary failures cool down/retry. Provider network restrictions can block runner SMTP ports; use a supported authenticated endpoint.
-* **Mailbox failure:** recorded degraded sender state; new outreach is not destroyed. Restore IMAP permissions/reachability and resync. Only bounded UID progress actually processed is advanced. Inbound lookback limits and classification are not a perfect spam/bounce service.
-* **Database lock / URL:** use session-affine connectivity. Do not forcibly bypass the lock during another process's work. Verify database privilege, TLS and connection reachability without printing the URL.
-* **REVIEW or incomplete campaign:** resolve only with evidence, retain the target and resume. Ambiguous sends can prevent automatic completion; avoiding duplicate sends has priority over an unconditional 100-success claim.
+### macOS / Linux
 
-STOPPED sender health is intentionally durable, even after replacing a password in GitHub Secrets. After independently validating the repaired account, restore **only that account** from a trusted PostgreSQL console (replace the example id with your actual immutable sender id):
-
-```sql
-UPDATE attachai.sender
-SET health='HEALTHY', cooldown_until=NULL, last_error=NULL, updated_at=now()
-WHERE id='sender01' AND health='STOPPED';
+```bash
+cd AttachAI
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+[ -f .env ] || cp .env.example .env
+mkdir -p knowledge
+python -m pytest -q
+uvicorn advanced_rag.web:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Do not globally clear stopped senders or bypass the database lock. A due follow-up remains bound to its original sender and will not jump to another account. Degraded IMAP health is restored by a successful mailbox sync; cooldown expires automatically.
+### Stop and restart
 
-## Repository layout
+Stop the server using `Ctrl+C`. Restart with the same `uvicorn` command. The admin registry, tenant files, vectors, and conversation history persist in `.rag_data/` by default.
 
-```text
-.github/workflows/attachai.yml   one production poll/dispatch workflow
-.github/workflows/tests.yml      isolated PostgreSQL CI
-attachai/config.py               controls + separate secret loading
-attachai/scheduling.py           pure latest-due-slot calculation
-attachai/db.py                   migrations, lock, persistence
-attachai/engine.py               durable coordinator / recovery
-attachai/providers.py            canonical network/evidence implementations
-attachai/cli.py                  diagnose, migrate, run, scheduled, review
-migrations/001_initial.sql       initial isolated application schema
-migrations/002_audit_indexes.sql additive audit-query indexes
-tests/                          deterministic provider/config + PostgreSQL tests
-monitor.yaml                    human-editable runtime controls
-.env.example                    secret shape documentation, never live values
-pyproject.toml / requirements.txt
+## Create and publish a client
+
+1. Sign in to `/admin`.
+2. Select **New Client**, enter a name, and add the client's primary website domain. Additional domains can be added as separate lines.
+3. Save the generated client API key in a secure place. AttachAI shows the raw key only once when creating or rotating it. The browser widget does **not** use that secret key.
+4. Open the client workspace, use **Assistant settings** to tune its welcome/fallback message, prompt instructions, model override, and domain allowlist.
+5. Use **Knowledge base** to upload approved client documents, then select **Ingest / refresh knowledge**.
+6. Use **Widget design** for brand color, theme, placement, dimensions, and suggested questions.
+7. Open **Publish & API**, copy the embed snippet, and place it before `</body>` on the approved site. Test on a staging page first.
+
+The standard embed looks like this, with the actual host and client ID filled in by the dashboard:
+
+```html
+<script src="https://YOUR-ATTACHAI-HOST/widget.js" data-client-id="cl_CLIENT_ID" defer></script>
 ```
 
-Install/run from the extracted repository root so `monitor.yaml` and `migrations` are available. A bare wheel without deployment configuration is not the deployment artifact. External legal/compliance review, provider reputation, verified contact suitability and actual inbox delivery remain your responsibility.
+If a website's origin is not on the client's allowlist, the widget API rejects it. During local development, the widget may be tested from localhost if no domains are configured. For production, configure the real website domain(s).
+
+## Configure an LLM
+
+Set one of the supported providers in `.env`. Existing AttachAI aliases are also accepted:
+
+```dotenv
+RAG_LLM_PROVIDER=openai
+RAG_LLM_MODEL=your-model-name
+RAG_API_BASE=https://api.example.com/v1
+OPENAI_API_KEY=your-secret-key
+```
+
+Equivalent aliases are `LLM_PROVIDER_TYPE`, `LLM_PROVIDER_NAME`, `LLM_MODEL`, `LLM_API_KEY`, and `LLM_BASE_URL`. Supported provider values include `none`, `openai` (including OpenAI-compatible services), `nvidia`, and `gemini`. Keep API keys only in server environment variables; never put them into assistant instructions, embed snippets, or a public repository. A valid base URL/model/key combination depends on the provider you use. Set these values in `.env` for local use or in the hosting service environment settings for deployment.
+
+## Render deployment
+
+A ready-to-edit `render.yaml` is included. It configures a web service, `/health` health check, production admin-key generation, and a persistent disk mounted at `/var/data` so tenant documents and SQLite state are not lost on process restart. Render persistent disks may require a paid service plan; check the current plan and disk pricing in Render before deploying.
+
+1. Commit the extracted `AttachAI` project to a private Git repository.
+2. In Render, create a Blueprint from that repository and review the `attachai-platform` service and disk.
+3. Set any optional provider values (`LLM_PROVIDER_TYPE`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL`) in Render's environment settings. Leave them unset for the local/fallback provider.
+4. Deploy and wait for `/health` to return HTTP 200.
+5. Open `https://YOUR-SERVICE.onrender.com/admin`. The Blueprint generates `ADMIN_API_KEY` as a secret environment variable; copy its value from the service's environment settings into the dashboard login.
+6. Create clients, add their real production website domains, ingest approved knowledge, and validate widget answers before publishing.
+
+Do not set `ADMIN_API_KEY=SET`, `admin`, `password`, or another placeholder in production. Startup intentionally refuses a placeholder or missing production admin key. Do not use a free/ephemeral filesystem as the only place to store important tenant data.
+
+If a Render Blueprint disk configuration is not suitable for your plan, create an available persistent disk and point `RAG_DATA_DIR` to a directory on that disk. The active code uses a SQLite registry and local tenant document/vector files by default, so persistence is essential.
+
+## Docker
+
+```bash
+cp .env.example .env
+# Set ADMIN_API_KEY to a strong local secret if you don't want a generated key file.
+docker compose up --build
+```
+
+Then open `http://localhost:8000/admin`. The Compose file mounts `.rag_data` and `knowledge` into the container. Do not expose the service to the public internet without configuring a strong `ADMIN_API_KEY` and production environment settings.
+
+## API routes
+
+### Platform routes
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/admin` | Admin dashboard |
+| `GET` | `/health` | Health check |
+| `GET` | `/widget.js` | Website widget script |
+| `GET` | `/api/admin/overview` | Platform counts (admin bearer key) |
+| `GET` | `/api/admin/clients` | List clients (admin bearer key) |
+| `POST` | `/api/admin/clients` | Create client and return its one-time raw key |
+| `GET` / `PATCH` / `DELETE` | `/api/admin/clients/{id}` | Read, update, or delete client |
+| `POST` | `/api/admin/clients/{id}/rotate-key` | Rotate client server API key |
+| `GET` / `POST` | `/api/admin/clients/{id}/documents` | List or upload knowledge files |
+| `DELETE` | `/api/admin/clients/{id}/documents/{name}` | Remove a file |
+| `POST` | `/api/admin/clients/{id}/ingest` | Index/refresh client knowledge (`?force=true` to rebuild) |
+| `GET` | `/api/admin/clients/{id}/leads` | List private leads for a client |
+| `GET` | `/api/admin/leads` | List platform leads for admin reporting/export |
+| `GET` | `/api/admin/clients/{id}/conversations` | List conversation sessions |
+| `GET` | `/api/admin/clients/{id}/conversations/{session_id}` | Read a transcript |
+| `GET` | `/api/client/config?client_id=...` | Public widget configuration; domain checked |
+| `POST` | `/api/client/chat` | Public widget chat; domain checked and rate-limited |
+| `POST` | `/api/client/leads` | Submit a visitor contact request after explicit consent |
+
+Admin APIs require `Authorization: Bearer YOUR_ADMIN_API_KEY`. Server-to-server client integrations may use `X-Client-Key` with a valid client key; store that key securely. The standard website widget intentionally sends only its public client ID and relies on the HTTP origin/domain allowlist. Public chat is rate-limited per client/IP in each running process; for multi-instance high-traffic production use, replace the in-process limiter with a shared rate-limit store and add edge/WAF protection.
+
+### Legacy single-tenant RAG routes
+
+The original `/chat`, `/query`, `/sessions`, `/ingest`, and retrieval diagnostics remain for backwards compatibility. They operate on the base RAG configured by `RAG_KNOWLEDGE_DIR` and `RAG_DATA_DIR`, not on a client tenant. In production mode (`ENVIRONMENT=production`, `NODE_ENV=production`, or Render), those legacy endpoints require admin bearer authentication by default. For normal platform usage, use the client-specific endpoints.
+
+## Environment variables
+
+See `.env.example`. Key settings:
+
+| Variable | Purpose |
+|---|---|
+| `ADMIN_API_KEY` | Admin login / API bearer key; mandatory in production |
+| `RAG_DATA_DIR` | Admin SQLite database and all client tenant data |
+| `RAG_KNOWLEDGE_DIR` | Legacy single-tenant knowledge directory |
+| `RAG_LLM_PROVIDER` / `LLM_PROVIDER_TYPE` | Global model provider |
+| `RAG_LLM_MODEL` / `LLM_MODEL` | Global model name |
+| `OPENAI_API_KEY` / `LLM_API_KEY` | Provider credential (depending on provider) |
+| `RAG_API_BASE` / `LLM_BASE_URL` | OpenAI-compatible base URL |
+| `LLM_TIMEOUT_MS` | Global LLM request timeout in milliseconds (default 30000) |
+| `LLM_MAX_RETRIES` | OpenAI-compatible request retries (default 2; capped at 8) |
+| `QDRANT_URL` | Optional remote Qdrant URL; local storage remains available as fallback |
+| `PORT` | Hosting port; the web server uses the platform-provided port |
+| `ATTACHAI_SECURE_LEGACY_API` | Explicit switch for legacy-route authentication in development |
+
+Some variables from broader Node/Supabase deployments (`NODE_VERSION`, `DATABASE_PROVIDER`, `STORAGE_PROVIDER`, `SUPABASE_*`, `TTS_API_KEY`, notification settings, and related values) are retained as documented compatibility placeholders in `.env.example`; the current Python platform does **not** automatically connect to Supabase Postgres/Storage/pgvector or provide text-to-speech/notification features. The implemented default persistence is SQLite plus local tenant files/vectors (and the optional Qdrant adapter). Do not assume Supabase values are active until an adapter is configured.
+
+## Security and operational notes
+
+- The raw admin key and raw client keys are not stored in the tenant registry; client keys are stored as SHA-256 hashes. Keys are high entropy and intended to be unguessable. A raw client key is displayed only at creation/rotation.
+- Widget domain checks are useful access control, but browser origins are not a substitute for authentication on private server APIs. Never rely on domain checks to protect an API secret embedded in JavaScript.
+- The dashboard is served by the same backend to avoid requiring a separate frontend build. All admin data requests still require a valid bearer key.
+- Uploaded documents are parsed by the existing document loaders. Treat files as untrusted, review them before indexing, and only upload material you are allowed to process.
+- Use HTTPS on public deployments, rotate any credentials that were exposed, and limit access to service logs/backups.
+- Client deletion removes that tenant's local workspace as well as its registry row. Back up tenant data before deleting a production client.
+- `RAG_DATA_DIR` must be on persistent storage for Render/containers; otherwise, tenant registry and conversation history may be lost across infrastructure changes.
+
+## Tests and verification
+
+Run:
+
+```bash
+python -m pytest -q
+python -m compileall -q advanced_rag main.py web.py
+```
+
+Tests cover the original RAG and memory flows, plus admin authentication, client creation, key rotation, domain enforcement, tenant knowledge separation, document upload, ingestion, widget endpoints, and API contract basics.

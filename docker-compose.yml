@@ -1,0 +1,13 @@
+services:
+  attachai:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./.rag_data:/app/.rag_data
+      - ./knowledge:/app/knowledge
+    env_file:
+      - .env
+    environment:
+      RAG_HOST: 0.0.0.0
+      RAG_PORT: 8000

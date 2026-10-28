@@ -1,6 +1,16 @@
-psycopg[binary]>=3.2,<4
-PyYAML>=6.0.2,<7
-croniter>=6.0,<7
-requests>=2.32.3,<3
-beautifulsoup4>=4.12.3,<5
-pytest>=8.3,<10
+# Core (the app runs with Python standard library)
+fastapi>=0.100
+uvicorn[standard]>=0.23
+pydantic>=2
+# Document formats
+pypdf>=4
+python-docx>=1
+# Optional providers / retrieval
+qdrant-client>=1.9
+sentence-transformers>=2.6
+openai>=1.30
+google-generativeai>=0.5
+streamlit>=1.32
+pytest>=8
+httpx>=0.24
+python-multipart>=0.0.9
