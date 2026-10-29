@@ -1,13 +1,40 @@
 services:
-  attachai:
+  app:
     build: .
-    ports:
-      - "${PORT:-8000}:8000"
-    volumes:
-      - ./.rag_data:/app/.rag_data
-      - ./knowledge:/app/knowledge
+    restart: unless-stopped
     env_file:
       - .env
     environment:
-      RAG_HOST: 0.0.0.0
-      RAG_PORT: 8000
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: ${PORT:-3000}
+      DATA_DIR: /app/data
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY in .env}
+      DATABASE_PROVIDER: ${DATABASE_PROVIDER:-sqlite}
+      REPOSITORY_PROVIDER: ${REPOSITORY_PROVIDER:-}
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-local}
+      VECTOR_PROVIDER: ${VECTOR_PROVIDER:-local}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    volumes:
+      - app-data:/app/data
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    depends_on:
+      - qdrant
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+  qdrant:
+    image: qdrant/qdrant:v1.14.1
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+volumes:
+  app-data: {}
+  qdrant-data: {}

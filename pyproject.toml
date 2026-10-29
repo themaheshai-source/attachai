@@ -1,11 +1,25 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
 [project]
-name = "attachai-platform"
-version = "1.2.0"
-description = "AttachAI multi-client RAG assistant platform with admin dashboard and website widget"
-requires-python = ">=3.10"
+name = "orbit-ai"
+version = "2.0.0"
+description = "Tenant-scoped Orbit AI service with hybrid retrieval and grounded responses"
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["orbit_ai*"]
+
 [tool.pytest.ini_options]
-pythonpath = ["."]
 testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
